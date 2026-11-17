@@ -11,7 +11,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
-import { Slider } from "@/components/ui/slider";
 import {
     Select,
     SelectContent,
@@ -80,6 +79,8 @@ export interface WhisperXParams {
     segment_resolution: string;
     hf_token?: string;
     print_progress: boolean;
+    parakeet_speech_aware?: boolean;
+    parakeet_max_chunk_seconds?: number;
     attention_context_left: number;
     attention_context_right: number;
     is_multi_track_enabled: boolean;
@@ -136,6 +137,8 @@ const DEFAULT_PARAMS: WhisperXParams = {
     highlight_words: false,
     segment_resolution: "sentence",
     print_progress: false,
+    parakeet_speech_aware: false,
+    parakeet_max_chunk_seconds: 30,
     attention_context_left: 256,
     attention_context_right: 256,
     is_multi_track_enabled: false,
@@ -255,6 +258,7 @@ export const TranscriptionConfigDialog = memo(function TranscriptionConfigDialog
         if (open) {
             const baseParams = initialParams || DEFAULT_PARAMS;
             setParams({
+                ...DEFAULT_PARAMS,
                 ...baseParams,
                 is_multi_track_enabled: isMultiTrack,
                 diarize: isMultiTrack ? false : baseParams.diarize
@@ -301,6 +305,10 @@ export const TranscriptionConfigDialog = memo(function TranscriptionConfigDialog
     };
 
     const handleSubmit = () => {
+        if (params.model_family === 'nvidia_parakeet' && (!Number.isFinite(params.parakeet_max_chunk_seconds ?? 30) || (params.parakeet_max_chunk_seconds ?? 30) < 5 || (params.parakeet_max_chunk_seconds ?? 30) > 120)) {
+            alert('Maximum chunk length must be between 5 and 120 seconds.');
+            return;
+        }
         if (isProfileMode) {
             onStartTranscription({ ...params, profileName, profileDescription });
         } else {
@@ -700,42 +708,32 @@ function WhisperConfig({ params, updateParam, isMultiTrack }: ConfigProps) {
 function ParakeetConfig({ params, updateParam, isMultiTrack }: ConfigProps) {
     return (
         <div className="space-y-6">
-            {/* Long-form Audio Settings */}
-            <Section title="Audio Context" description="Configure how much context the model uses for long audio files">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
-                    <div className="space-y-3">
-                        <FormField label="Left Context">
-                            <Slider
-                                value={[params.attention_context_left]}
-                                onValueChange={(v) => updateParam('attention_context_left', v[0])}
-                                max={512}
-                                min={64}
-                                step={64}
-                                className="w-full"
-                            />
-                            <div className="flex justify-between text-xs text-[var(--text-tertiary)]">
-                                <span>64</span>
-                                <span className="font-medium text-[var(--text-primary)]">{params.attention_context_left}</span>
-                                <span>512</span>
-                            </div>
-                        </FormField>
+            <Section title="Parakeet Chunking" description="Parakeet only. Silence stays in the original timeline; VAD chooses cut locations.">
+                <div className="space-y-4">
+                    <div className="flex items-center gap-3">
+                        <Switch id="parakeet_speech_aware" checked={params.parakeet_speech_aware ?? false}
+                            onCheckedChange={(v) => updateParam('parakeet_speech_aware', v)} />
+                        <label htmlFor="parakeet_speech_aware" className="text-sm cursor-pointer">Use speech-aware chunking (VAD)</label>
                     </div>
-
-                    <div className="space-y-3">
-                        <FormField label="Right Context">
-                            <Slider
-                                value={[params.attention_context_right]}
-                                onValueChange={(v) => updateParam('attention_context_right', v[0])}
-                                max={512}
-                                min={64}
-                                step={64}
-                                className="w-full"
-                            />
-                            <div className="flex justify-between text-xs text-[var(--text-tertiary)]">
-                                <span>64</span>
-                                <span className="font-medium text-[var(--text-primary)]">{params.attention_context_right}</span>
-                                <span>512</span>
-                            </div>
+                    <FormField label="Maximum chunk length (seconds)" htmlFor="parakeet_max_chunk_seconds"
+                        description="Includes decoded context on both sides. 30 seconds is verified on the 4 GB T1200; larger values may need more memory. Off uses fixed chunks with this maximum.">
+                        <Input id="parakeet_max_chunk_seconds" type="number" min={5} max={120} step={0.1}
+                            value={params.parakeet_max_chunk_seconds ?? 30}
+                            onChange={(e) => updateParam('parakeet_max_chunk_seconds', e.target.value === '' ? NaN : Number(e.target.value))}
+                            className={inputClassName} />
+                    </FormField>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-6">
+                        <FormField label="Device" description="Uses float32, batch 1 and the native greedy decoder; CUDA graphs stay off.">
+                            <Select value={params.device} onValueChange={(v) => updateParam('device', v)}>
+                                <SelectTrigger className={selectTriggerClassName}><SelectValue /></SelectTrigger>
+                                <SelectContent className={selectContentClassName}>
+                                    <SelectItem value="cpu">CPU</SelectItem><SelectItem value="cuda">CUDA GPU</SelectItem><SelectItem value="auto">Auto</SelectItem>
+                                </SelectContent>
+                            </Select>
+                        </FormField>
+                        <FormField label="CPU threads" description="0 uses the tested default of 6 threads. Applies to both chunking modes.">
+                            <Input type="number" min={0} max={64} step={1} value={params.threads}
+                                onChange={(e) => updateParam('threads', Number(e.target.value))} className={inputClassName} />
                         </FormField>
                     </div>
                 </div>

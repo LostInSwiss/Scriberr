@@ -2,11 +2,13 @@ package adapters
 
 import (
 	"context"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -15,6 +17,9 @@ import (
 	"scriberr/pkg/downloader"
 	"scriberr/pkg/logger"
 )
+
+//go:embed parakeet_worker/*.py
+var parakeetWorkerFiles embed.FS
 
 // ParakeetAdapter implements the TranscriptionAdapter interface for NVIDIA Parakeet
 type ParakeetAdapter struct {
@@ -52,6 +57,11 @@ func NewParakeetAdapter(envPath string) *ParakeetAdapter {
 	}
 
 	schema := []interfaces.ParameterSchema{
+		{Name: "parakeet_speech_aware", Type: "bool", Default: false, Description: "Use speech-aware cut selection and context ownership", Group: "advanced"},
+		{Name: "parakeet_max_chunk_seconds", Type: "float", Default: 30.0, Min: &[]float64{5}[0], Max: &[]float64{120}[0], Description: "Maximum decoded input including context", Group: "advanced"},
+		{Name: "device", Type: "string", Default: "auto", Options: []string{"cpu", "cuda", "auto"}, Group: "basic"},
+		{Name: "device_index", Type: "int", Default: 0, Min: &[]float64{0}[0], Group: "advanced"},
+		{Name: "threads", Type: "int", Default: 0, Min: &[]float64{0}[0], Max: &[]float64{64}[0], Group: "advanced"},
 		// Core settings
 		{
 			Name:        "timestamps",
@@ -125,6 +135,10 @@ func (p *ParakeetAdapter) GetSupportedModels() []string {
 func (p *ParakeetAdapter) PrepareEnvironment(ctx context.Context) error {
 	logger.Info("Preparing NVIDIA Parakeet environment", "env_path", p.envPath)
 
+	// Refresh versioned embedded workers even when the Python environment is cached.
+	if err := p.installProfileWorker(); err != nil {
+		return err
+	}
 	// Check if environment is already ready (using cache to speed up repeated checks)
 	if CheckEnvironmentReady(p.envPath, "import nemo.collections.asr") {
 		modelPath := filepath.Join(p.envPath, "parakeet-tdt-0.6b-v3.nemo")
@@ -331,7 +345,7 @@ def transcribe_audio(
 
     # Apply the new decoding strategy (this rebuilds the decoder with our config)
     asr_model.change_decoding_strategy(dec_cfg)
-    print("✓ CUDA graphs disabled successfully")
+    print("âœ“ CUDA graphs disabled successfully")
 
     # Configure for long-form audio if context sizes are not default
     if context_left != 256 or context_right != 256:
@@ -367,7 +381,9 @@ def transcribe_audio(
             "segment_timestamps": segment_timestamps,
             "audio_file": audio_path,
             "model": "parakeet-tdt-0.6b-v3",
-            "context": {
+            "context"
+    "embed"
+    "math": {
                 "left": context_left,
                 "right": context_right
             }
@@ -521,28 +537,10 @@ func (p *ParakeetAdapter) Transcribe(ctx context.Context, input interfaces.Audio
 		}
 	}
 
-	// Get chunk threshold from environment (default: 300 seconds = 5 minutes)
-	chunkThreshold := 300
-	if thresholdStr := os.Getenv("PARAKEET_CHUNK_THRESHOLD_SECS"); thresholdStr != "" {
-		if parsed, err := strconv.Atoi(thresholdStr); err == nil && parsed > 0 {
-			chunkThreshold = parsed
-		}
-	}
-
-	// Choose processing path based on audio duration
-	chunkThresholdDuration := time.Duration(chunkThreshold) * time.Second
-	var result *interfaces.TranscriptResult
-	if audioDuration > chunkThresholdDuration {
-		logger.Info("Using buffered inference for long audio",
-			"duration_secs", audioDuration.Seconds(),
-			"threshold_secs", chunkThreshold)
-		result, err = p.transcribeBuffered(ctx, audioInput, params, tempDir, procCtx.OutputDirectory)
-	} else {
-		logger.Info("Using standard transcription for short audio",
-			"duration_secs", audioDuration.Seconds(),
-			"threshold_secs", chunkThreshold)
-		result, err = p.transcribeStandard(ctx, audioInput, params, tempDir, procCtx.OutputDirectory)
-	}
+	// The saved profile controls the route for every duration, including short files.
+	// No process-wide threshold may override a profile.
+	_ = audioDuration
+	result, err := p.transcribeBuffered(ctx, audioInput, params, tempDir, procCtx.OutputDirectory)
 
 	if err != nil {
 		return nil, err
@@ -638,6 +636,7 @@ func (p *ParakeetAdapter) transcribeBuffered(ctx context.Context, input interfac
 	if err != nil {
 		return nil, fmt.Errorf("failed to build buffered command: %w", err)
 	}
+	args = append(args, "--evidence-dir", filepath.Join(outputDir, "parakeet-evidence"))
 
 	// Execute buffered inference
 	cmd := exec.CommandContext(ctx, "uv", args...)
@@ -839,7 +838,7 @@ def transcribe_buffered(
 
     # Apply the new decoding strategy (this rebuilds the decoder with our config)
     asr_model.change_decoding_strategy(dec_cfg)
-    print("✓ CUDA graphs disabled successfully")
+    print("âœ“ CUDA graphs disabled successfully")
 
     print(f"Splitting audio into {chunk_duration_secs}s chunks...")
     chunks, sr = split_audio_file(audio_path, chunk_duration_secs)
@@ -957,19 +956,34 @@ if __name__ == "__main__":
 func (p *ParakeetAdapter) buildBufferedArgs(input interfaces.AudioInput, params map[string]interface{}, tempDir string) ([]string, error) {
 	outputFile := filepath.Join(tempDir, "result.json")
 
-	// Get chunk threshold from environment (default: 300 seconds = 5 minutes)
-	chunkDuration := "300"
-	if thresholdStr := os.Getenv("PARAKEET_CHUNK_THRESHOLD_SECS"); thresholdStr != "" {
-		chunkDuration = thresholdStr
+	maximum, aware, err := parakeetChunkSettings(params)
+	if err != nil {
+		return nil, err
 	}
-
-	scriptPath := filepath.Join(p.envPath, "transcribe_buffered.py")
-	args := []string{
-		"run", "--native-tls", "--project", p.envPath, "python", scriptPath,
-		input.FilePath,
-		"--output", outputFile,
-		"--chunk-len", chunkDuration,
+	vadPython := filepath.Join(filepath.Dir(p.envPath), "WhisperX", ".venv", "bin", "python")
+	if runtime.GOOS == "windows" {
+		vadPython = filepath.Join(filepath.Dir(p.envPath), "WhisperX", ".venv", "Scripts", "python.exe")
 	}
+	scriptPath := filepath.Join(p.envPath, "profile-worker-v1", "profile_worker.py")
+	args := []string{"run", "--native-tls", "--project", p.envPath, "python", scriptPath,
+		input.FilePath, "--output", outputFile, "--chunk-len", strconv.FormatFloat(maximum, 'f', -1, 64),
+		"--model", filepath.Join(p.envPath, "parakeet-tdt-0.6b-v3.nemo"),
+		"--vad-python", vadPython}
+	if aware {
+		args = append(args, "--speech-aware")
+	}
+	device := p.GetStringParameter(params, "device")
+	if device == "" {
+		device = "auto"
+	}
+	if device == "cuda" {
+		device = "cuda:" + strconv.Itoa(p.GetIntParameter(params, "device_index"))
+	}
+	threads := p.GetIntParameter(params, "threads")
+	if threads == 0 {
+		threads = 6
+	}
+	args = append(args, "--device", device, "--threads", strconv.Itoa(threads))
 
 	return args, nil
 }

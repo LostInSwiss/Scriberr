@@ -590,7 +590,10 @@ func (u *UnifiedTranscriptionService) convertToOpenAIParams(params models.Whispe
 // convertToParakeetParams converts to Parakeet-specific parameters
 func (u *UnifiedTranscriptionService) convertToParakeetParams(params models.WhisperXParams) map[string]interface{} {
 	return map[string]interface{}{
-		"timestamps":         true,
+		"timestamps":                 true,
+		"parakeet_speech_aware":      params.ParakeetSpeechAware,
+		"parakeet_max_chunk_seconds": params.EffectiveParakeetMaxChunkSeconds(),
+		"device":                     params.Device, "device_index": params.DeviceIndex, "threads": params.Threads,
 		"context_left":       params.AttentionContextLeft,
 		"context_right":      params.AttentionContextRight,
 		"output_format":      OutputFormatJSON,
@@ -764,6 +767,10 @@ func (u *UnifiedTranscriptionService) parametersToMap(params models.WhisperXPara
 	paramMap["vad_method"] = params.VadMethod
 	paramMap["vad_onset"] = params.VadOnset
 	paramMap["vad_offset"] = params.VadOffset
+	if params.ModelFamily == FamilyNvidiaParakeet {
+		paramMap["parakeet_speech_aware"] = params.ParakeetSpeechAware
+		paramMap["parakeet_max_chunk_seconds"] = params.EffectiveParakeetMaxChunkSeconds()
+	}
 	paramMap["context_left"] = params.AttentionContextLeft
 	paramMap["context_right"] = params.AttentionContextRight
 	paramMap["timestamps"] = true

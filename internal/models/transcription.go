@@ -116,6 +116,10 @@ type WhisperXParams struct {
 	HfToken       *string `json:"hf_token,omitempty" gorm:"type:text"`
 	PrintProgress bool    `json:"print_progress" gorm:"type:boolean;default:false"`
 
+	// Parakeet-only profile controls. Nil maximum preserves legacy fixed30 behaviour.
+	ParakeetSpeechAware     bool     `json:"parakeet_speech_aware" gorm:"default:false"`
+	ParakeetMaxChunkSeconds *float64 `json:"parakeet_max_chunk_seconds,omitempty"`
+
 	// NVIDIA Parakeet-specific parameters for long-form audio
 	AttentionContextLeft  int `json:"attention_context_left" gorm:"type:int;default:256"`
 	AttentionContextRight int `json:"attention_context_right" gorm:"type:int;default:256"`
@@ -204,10 +208,10 @@ func (tp *TranscriptionProfile) BeforeSave(tx *gorm.DB) error {
 // LLMConfig represents LLM configuration settings
 type LLMConfig struct {
 	ID            uint      `json:"id" gorm:"primaryKey"`
-	Provider      string    `json:"provider" gorm:"not null;type:varchar(50)"` // "ollama" or "openai"
-	BaseURL       *string   `json:"base_url,omitempty" gorm:"type:text"`       // For Ollama
+	Provider      string    `json:"provider" gorm:"not null;type:varchar(50)"`  // "ollama" or "openai"
+	BaseURL       *string   `json:"base_url,omitempty" gorm:"type:text"`        // For Ollama
 	OpenAIBaseURL *string   `json:"openai_base_url,omitempty" gorm:"type:text"` // For OpenAI custom endpoint
-	APIKey        *string   `json:"api_key,omitempty" gorm:"type:text"`        // For OpenAI (encrypted)
+	APIKey        *string   `json:"api_key,omitempty" gorm:"type:text"`         // For OpenAI (encrypted)
 	IsActive      bool      `json:"is_active" gorm:"type:boolean;default:false"`
 	CreatedAt     time.Time `json:"created_at" gorm:"autoCreateTime"`
 	UpdatedAt     time.Time `json:"updated_at" gorm:"autoUpdateTime"`

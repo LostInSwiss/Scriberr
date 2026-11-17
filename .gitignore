@@ -70,3 +70,6 @@ tmp/
 # *.svg
 # *.png
 dhl.txt
+__pycache__/
+*.pyc
+tests/database_test.db

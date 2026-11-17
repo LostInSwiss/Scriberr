@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -1077,8 +1078,10 @@ func (h *Handler) getValidatedTranscriptionParams(c *gin.Context, job *models.Tr
 
 	// Parse request body parameters, overriding defaults
 	if err := c.ShouldBindJSON(&requestParams); err != nil {
-		// Use defaults if JSON parsing fails
-		logger.Debug("Failed to parse JSON parameters, using defaults", "error", err)
+		if err != io.EOF {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid transcription parameters"})
+			return nil, err
+		}
 	}
 
 	// Debug: log what we received
@@ -1090,6 +1093,10 @@ func (h *Handler) getValidatedTranscriptionParams(c *gin.Context, job *models.Tr
 		"diarize_model", requestParams.DiarizeModel,
 		"language", requestParams.Language)
 
+	if err := requestParams.ValidateParakeetChunking(); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return nil, err
+	}
 	// Validate NVIDIA-specific constraints
 	if requestParams.ModelFamily == "nvidia_parakeet" || requestParams.ModelFamily == "nvidia_canary" {
 		// Both NVIDIA models support multiple European languages
@@ -2251,6 +2258,10 @@ func (h *Handler) CreateProfile(c *gin.Context) {
 	// For now, we'll skip explicit check or implement it in repository.
 	// Assuming unique constraint on Name in DB or we can check via List.
 
+	if err := profile.Parameters.ValidateParakeetChunking(); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	if err := h.profileRepo.Create(c.Request.Context(), &profile); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create profile"})
 		return
@@ -2325,6 +2336,10 @@ func (h *Handler) UpdateProfile(c *gin.Context) {
 	updatedProfile.ID = existingProfile.ID
 	updatedProfile.CreatedAt = existingProfile.CreatedAt
 
+	if err := updatedProfile.Parameters.ValidateParakeetChunking(); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	if err := h.profileRepo.Update(c.Request.Context(), &updatedProfile); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update profile"})
 		return
@@ -2507,6 +2522,10 @@ func (h *Handler) SubmitQuickTranscription(c *gin.Context) {
 	}
 
 	// Submit quick transcription job
+	if err := params.ValidateParakeetChunking(); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 	job, err := h.quickTranscription.SubmitQuickJob(file, header.Filename, params)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to submit quick transcription: %v", err)})
