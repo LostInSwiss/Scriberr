@@ -64,6 +64,12 @@ func (p *ProcessingPipeline) ProcessAudio(ctx context.Context, input interfaces.
 // AudioFormatPreprocessor converts audio to required formats
 type AudioFormatPreprocessor struct{}
 
+const (
+	requiredFormat     = "wav"
+	requiredSampleRate = 16000
+	requiredChannels   = 1
+)
+
 // AppliesTo checks if this preprocessor should be used for the given model
 func (a *AudioFormatPreprocessor) AppliesTo(capabilities interfaces.ModelCapabilities) bool {
 	// Apply to all models for consistent audio format (mono 16kHz)
@@ -77,18 +83,37 @@ func (a *AudioFormatPreprocessor) GetRequiredFormats() []string {
 
 // Process converts audio to the required format
 func (a *AudioFormatPreprocessor) Process(ctx context.Context, input interfaces.AudioInput) (interfaces.AudioInput, error) {
-	// Check if conversion is needed
-	requiredFormat := "wav"
-	requiredSampleRate := 16000
-	requiredChannels := 1
-
 	if strings.ToLower(input.Format) == requiredFormat &&
 		input.SampleRate == requiredSampleRate &&
 		input.Channels == requiredChannels {
 		// No conversion needed
 		return input, nil
 	}
+	outputPath := strings.TrimSuffix(input.FilePath, filepath.Ext(input.FilePath)) + "_converted.wav"
+	return a.convert(ctx, input, outputPath, "")
+}
 
+// ProcessWithFilters renders a validated filter chain even if the source already matches the target format.
+// The caller owns the returned TempFilePath on success.
+func (a *AudioFormatPreprocessor) ProcessWithFilters(ctx context.Context, input interfaces.AudioInput, filters, tempDir string) (interfaces.AudioInput, error) {
+	file, err := os.CreateTemp(tempDir, "ffmpeg-*.wav")
+	if err != nil {
+		return input, fmt.Errorf("create temporary WAV: %w", err)
+	}
+	outputPath := file.Name()
+	if err := file.Close(); err != nil {
+		_ = os.Remove(outputPath)
+		return input, fmt.Errorf("close temporary WAV: %w", err)
+	}
+	converted, err := a.convert(ctx, input, outputPath, filters)
+	if err != nil {
+		_ = os.Remove(outputPath)
+		return input, err
+	}
+	return converted, nil
+}
+
+func (a *AudioFormatPreprocessor) convert(ctx context.Context, input interfaces.AudioInput, outputPath, filters string) (interfaces.AudioInput, error) {
 	logger.Info("Converting audio format",
 		"from_format", input.Format,
 		"to_format", requiredFormat,
@@ -97,24 +122,29 @@ func (a *AudioFormatPreprocessor) Process(ctx context.Context, input interfaces.
 		"from_channels", input.Channels,
 		"to_channels", requiredChannels)
 
-	// Create output path
-	outputPath := strings.TrimSuffix(input.FilePath, filepath.Ext(input.FilePath)) + "_converted.wav"
-
-	// Build FFmpeg command
-	args := []string{
-		"-i", input.FilePath,
+	args := []string{"-i", input.FilePath}
+	if filters != "" {
+		args = []string{"-hide_banner", "-nostdin", "-loglevel", "error", "-xerror", "-i", input.FilePath, "-map", "0:a:0", "-af", filters}
+	}
+	args = append(args,
 		"-ar", strconv.Itoa(requiredSampleRate),
 		"-ac", strconv.Itoa(requiredChannels),
 		"-c:a", "pcm_s16le",
 		"-y", // Overwrite output file
 		outputPath,
-	}
+	)
 
 	// Execute FFmpeg
 	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		logger.Error("FFmpeg conversion failed", "output", string(output), "error", err)
+		if ctx.Err() != nil {
+			return input, ctx.Err()
+		}
+		if filters != "" && len(output) != 0 {
+			return input, fmt.Errorf("FFmpeg audio filters: %s: %w", strings.TrimSpace(string(output)), err)
+		}
 		return input, fmt.Errorf("audio conversion failed: %w", err)
 	}
 

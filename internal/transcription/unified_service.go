@@ -210,6 +210,9 @@ func (u *UnifiedTranscriptionService) ProcessJob(ctx context.Context, jobID stri
 //nolint:gocyclo // Orchestrator function with multiple steps
 func (u *UnifiedTranscriptionService) processSingleTrackJob(ctx context.Context, job *models.TranscriptionJob) error {
 	logger.Info("Processing single-track job", "job_id", job.ID, "model_family", job.Parameters.ModelFamily)
+	if err := job.Parameters.ValidateAudioFilters(); err != nil {
+		return err
+	}
 
 	// Create processing context
 	procCtx := interfaces.ProcessingContext{
@@ -252,23 +255,28 @@ func (u *UnifiedTranscriptionService) processSingleTrackJob(ctx context.Context,
 		}
 	}
 
-	// Apply preprocessing
-	preprocessedInput, err = u.pipeline.ProcessAudio(ctx, audioInput, capabilities)
-	if err != nil {
-		logger.Warn("Audio preprocessing failed, using original", "error", err)
-		preprocessedInput = audioInput
-	} else {
-		// Track temporary file for cleanup if preprocessing created one
-		if preprocessedInput.TempFilePath != "" && preprocessedInput.TempFilePath != audioInput.FilePath {
-			tempFilesToCleanup = append(tempFilesToCleanup, preprocessedInput.TempFilePath)
-			logger.Info("Audio preprocessing completed",
-				"original", audioInput.FilePath,
-				"converted", preprocessedInput.TempFilePath,
-				"original_sr", audioInput.SampleRate,
-				"converted_sr", preprocessedInput.SampleRate,
-				"original_channels", audioInput.Channels,
-				"converted_channels", preprocessedInput.Channels)
+	// Explicit filters must succeed before recognition starts.
+	if filters := strings.TrimSpace(job.Parameters.FFmpegAudioFilters); filters != "" {
+		preprocessedInput, err = (&pipeline.AudioFormatPreprocessor{}).ProcessWithFilters(ctx, audioInput, filters, procCtx.TempDirectory)
+		if err != nil {
+			return fmt.Errorf("audio preprocessing failed: %w", err)
 		}
+	} else {
+		preprocessedInput, err = u.pipeline.ProcessAudio(ctx, audioInput, capabilities)
+		if err != nil {
+			logger.Warn("Audio preprocessing failed, using original", "error", err)
+			preprocessedInput = audioInput
+		}
+	}
+	if preprocessedInput.TempFilePath != "" && preprocessedInput.TempFilePath != audioInput.FilePath {
+		tempFilesToCleanup = append(tempFilesToCleanup, preprocessedInput.TempFilePath)
+		logger.Info("Audio preprocessing completed",
+			"original", audioInput.FilePath,
+			"converted", preprocessedInput.TempFilePath,
+			"original_sr", audioInput.SampleRate,
+			"converted_sr", preprocessedInput.SampleRate,
+			"original_channels", audioInput.Channels,
+			"converted_channels", preprocessedInput.Channels)
 	}
 
 	// Ensure cleanup of temporary files when function exits

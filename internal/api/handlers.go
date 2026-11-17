@@ -1093,7 +1093,7 @@ func (h *Handler) getValidatedTranscriptionParams(c *gin.Context, job *models.Tr
 		"diarize_model", requestParams.DiarizeModel,
 		"language", requestParams.Language)
 
-	if err := requestParams.ValidateParakeetChunking(); err != nil {
+	if err := requestParams.ValidateTranscriptionOptions(); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return nil, err
 	}
@@ -2258,7 +2258,7 @@ func (h *Handler) CreateProfile(c *gin.Context) {
 	// For now, we'll skip explicit check or implement it in repository.
 	// Assuming unique constraint on Name in DB or we can check via List.
 
-	if err := profile.Parameters.ValidateParakeetChunking(); err != nil {
+	if err := profile.Parameters.ValidateTranscriptionOptions(); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -2336,7 +2336,7 @@ func (h *Handler) UpdateProfile(c *gin.Context) {
 	updatedProfile.ID = existingProfile.ID
 	updatedProfile.CreatedAt = existingProfile.CreatedAt
 
-	if err := updatedProfile.Parameters.ValidateParakeetChunking(); err != nil {
+	if err := updatedProfile.Parameters.ValidateTranscriptionOptions(); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -2522,7 +2522,7 @@ func (h *Handler) SubmitQuickTranscription(c *gin.Context) {
 	}
 
 	// Submit quick transcription job
-	if err := params.ValidateParakeetChunking(); err != nil {
+	if err := params.ValidateTranscriptionOptions(); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}

@@ -50,6 +50,7 @@ export interface WhisperXParams {
     interpolate_method: string;
     no_align: boolean;
     return_char_alignments: boolean;
+    ffmpeg_audio_filters?: string;
     vad_method: string;
     vad_onset: number;
     vad_offset: number;
@@ -309,10 +310,14 @@ export const TranscriptionConfigDialog = memo(function TranscriptionConfigDialog
             alert('Maximum chunk length must be between 5 and 120 seconds.');
             return;
         }
+        const submittedParams = {
+            ...params,
+            ffmpeg_audio_filters: params.model_family === "openai" ? "" : params.ffmpeg_audio_filters?.trim(),
+        };
         if (isProfileMode) {
-            onStartTranscription({ ...params, profileName, profileDescription });
+            onStartTranscription({ ...submittedParams, profileName, profileDescription });
         } else {
-            onStartTranscription(params);
+            onStartTranscription(submittedParams);
         }
     };
 
@@ -397,6 +402,16 @@ export const TranscriptionConfigDialog = memo(function TranscriptionConfigDialog
                             </SelectContent>
                         </Select>
                     </FormField>
+
+                    {params.model_family !== "openai" && (
+                        <FormField label="FFmpeg audio filters" htmlFor="ffmpeg_audio_filters"
+                            description="Optional comma-separated filters applied before transcription. Blank uses standard audio preparation. Playback uses the original recording.">
+                            <Input id="ffmpeg_audio_filters" value={params.ffmpeg_audio_filters ?? ""}
+                                onChange={(e) => updateParam("ffmpeg_audio_filters", e.target.value)}
+                                placeholder="highpass=f=100,acompressor=threshold=-30dB:ratio=3"
+                                maxLength={2048} spellCheck={false} className={inputClassName} />
+                        </FormField>
+                    )}
 
                     {/* Multi-track notice */}
                     {isMultiTrack && (
