@@ -77,6 +77,9 @@ type WhisperXParams struct {
 	NoAlign              bool    `json:"no_align" gorm:"type:boolean;default:false"`
 	ReturnCharAlignments bool    `json:"return_char_alignments" gorm:"type:boolean;default:false"`
 
+	// Optional preprocessing before audio is sent to the local model.
+	FFmpegAudioFilters string `json:"ffmpeg_audio_filters,omitempty" gorm:"type:text"`
+
 	// VAD (Voice Activity Detection) settings
 	VadMethod string  `json:"vad_method" gorm:"type:varchar(20);default:'pyannote'"`
 	VadOnset  float64 `json:"vad_onset" gorm:"type:real;default:0.5"`
